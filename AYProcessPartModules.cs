@@ -104,6 +104,7 @@ namespace AY
         private float currentRateConverter;
         private float currentRateGreenhouse;
         private USILSWrapper.ModuleLifeSupportSystem usiMLS;
+        private USILSWrapper.ModuleSwappableConverter usiMSC;
         private IONRCSWrapper.ModuleIONPoweredRCS tmpIonPoweredRcs;
         private IONRCSWrapper.ModulePPTPoweredRCS tmpPPTPoweredRcs;
         private float IONRCSelecUse;
@@ -698,10 +699,13 @@ namespace AY
             //Utilities.Log_Debug("Resource Harvester " + currentPart.name);
             ModuleResourceHarvester tmpHvstr = (ModuleResourceHarvester)module;
             List<PartResourceDefinition> rscse = tmpHvstr.GetConsumedResources();
+            double ratio = tmpHvstr.eInput.Ratio;
+            double efficiency = 1;
 
             if (Utilities.GameModeisFlight)
             {
                 prtActive = tmpHvstr.ModuleIsActive();
+                efficiency = tmpHvstr.GetEfficiencyMultiplier();
                 //Utilities.Log_Debug("Inflight andIsactive = " + prtActive);
             }
             if (Utilities.GameModeisEditor)
@@ -709,31 +713,31 @@ namespace AY
                 prtActive = true;
                 //Utilities.Log_Debug("In VAB and editorMaxECusage is on so part active");
             }
-            for (int i = tmpHvstr.GetConsumedResources().Count - 1; i >= 0; --i)
+
+            if (tmpHvstr.eInput.ResourceName == MAIN_POWER_NAME && prtActive)
             {
-                //Utilities.Log_Debug("Harvester resource = " + r.name + " cost = " + r.unitCost);
-                if (tmpHvstr.GetConsumedResources()[i].name == MAIN_POWER_NAME && prtActive)
-                {
-                    //Appears to be NO way to get to the input resources.... set to 15 for current value in distro files
-                    tmpPower += 15.0f;
-                }
+                tmpPower = ratio * efficiency;
             }
             AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, module.moduleName, false, prtActive, tmpPower, false, false);
 
             ProcessPartEmergencyShutdownProcedures(currentPart, module, prtActive);
         }
         
-        private void ProcessModuleResourceConverter(string prtName, Part currentPart, PartModule module, float KPBS)
+        private void ProcessModuleResourceConverter(string prtName, Part currentPart, PartModule module, float KPBS, string mod_num = null)
         {
             prtActive = false;
             prtPower = "";
             tmpPower = 0f;
             tmpRegRc = (ModuleResourceConverter)module;
+
+            string longModuleName = tmpRegRc.moduleName + " " + tmpRegRc.ConverterName + " " + mod_num;
+
             recipe = tmpRegRc.Recipe;
             //Utilities.Log_Debug("Resource Converter " + prtName);
-
+            double efficiency = 1;
             if (Utilities.GameModeisFlight)
             {
+                efficiency = tmpRegRc.GetEfficiencyMultiplier();
                 Utilities.ISRUStatus status = Utilities.GetModResConverterStatus(tmpRegRc);
                 if (status == Utilities.ISRUStatus.Active) prtActive = true;
                 //Utilities.Log_Debug("Inflight andIsactive = {0}, status - {1}" , prtActive , status);
@@ -748,7 +752,7 @@ namespace AY
             tmpPower = 0f;
             FillAmount = recipe.FillAmount;
             if (KPBS > 0) FillAmount = KPBS;
-            var efficiency = tmpRegRc.GetEfficiencyMultiplier();
+
 
             recInputs = tmpRegRc.Recipe.Inputs;
             for (int i = recInputs.Count - 1; i >= 0; --i)
@@ -758,7 +762,7 @@ namespace AY
                     //Utilities.Log_Debug("Converter Input resource = " + r.ResourceName + " ratio = " + r.Ratio);
                     if (prtActive)
                         tmpPower = recInputs[i].Ratio * FillAmount * efficiency;
-                    AYVesselPartLists.AddPart(currentPart.craftID, currentPart.partInfo.title, prtName, module.moduleName, false, prtActive, tmpPower, false, false);
+                    AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, longModuleName, false, prtActive, tmpPower, false, false);
                 }
             }
 
@@ -772,7 +776,7 @@ namespace AY
                     //Utilities.Log_Debug("Converter Output resource = " + r.ResourceName + " ratio = " + r.Ratio);
                     if (prtActive)
                         tmpPower = recOutputs[i].Ratio * recipe.TakeAmount * efficiency;
-                    AYVesselPartLists.AddPart(currentPart.craftID, currentPart.partInfo.title, prtName, module.moduleName, false, prtActive, tmpPower, true, false);
+                    AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, longModuleName, false, prtActive, tmpPower, true, false);
                 }
             }
 
@@ -1592,58 +1596,103 @@ namespace AY
                     break;
             }
         }
-        
+
         private void checkUSILS(PartModule psdpart, Part currentPart)
         {
+            //Only parse once if ModuleSwappableConverter is present
+            if (psdpart.moduleName != "ModuleSwappableConverter" && currentPart.Modules.Contains("ModuleSwappableConverter"))
+            {
+                return;
+            }
+
             switch (psdpart.moduleName)
             {
+                case "ModuleSwappableConverter":
+
+                    var converterList = currentPart.Modules.GetModules<BaseConverter>();
+                    var bayList = currentPart.Modules.GetModules<PartModule>();
+
+                    foreach (var bay in bayList)
+                    {
+                        if (bay.moduleName == "ModuleSwappableConverter")
+                        {
+                            usiMSC = new USILSWrapper.ModuleSwappableConverter(bay);
+                            var converter = converterList[usiMSC.currentLoadout];
+                            string bayname = usiMSC.bayName;
+                            if (converter != null)
+                            {
+                                switch (converter.moduleName)
+                                {
+                                    case "ModuleLifeSupportRecycler":
+                                    case "ModuleHabitation":
+                                    case "ModuleLifeSupportExtender":
+                                    case "ModuleResourceConverter_USI":
+                                    case "ModuleEfficiencyPart":
+                                    case "ModuleBulkConverter":
+                                        ProcessModuleResourceConverter(currentPart.name, currentPart, converter, 0, bayname);
+                                        break;
+                                    case "ModuleRessourceHarvester_USI":
+                                        ProcessModuleResourceharvester(currentPart.name, currentPart, converter);
+                                        break;
+                                    case "ModuleHeatPump":
+                                        ProcessModuleActiveRadiator(currentPart.name, currentPart, psdpart);
+                                        break;
+                                    default:
+                                        Utilities.Log("MSC: " + converter.moduleName + " (" + currentPart.name + ")");
+                                        break;
+                                }
+                            }
+                        }
+                    }
+                    break;
                 case "ModuleLifeSupportRecycler":
+                case "ModuleHabitation":
+                case "ModuleLifeSupportExtender":
+                case "ModuleResourceConverter_USI":
+                case "ModuleEfficiencyPart":
+                case "ModuleBulkConverter":
                     ProcessModuleResourceConverter(currentPart.name, currentPart, psdpart, 0);
                     break;
-
-                /*case "ModuleLifeSupport":
+                case "ModuleRessourceHarvester_USI":
+                    ProcessModuleResourceharvester(currentPart.name, currentPart, psdpart);
+                    break;
+                case "ModuleHeatPump":
+                    ProcessModuleActiveRadiator(currentPart.name, currentPart, psdpart);
+                    break;
+                case "ModuleLifeSupport":
                     prtName = currentPart.name;
                     prtPower = "";
                     prtActive = false;
                     tmpPower = 0;
-                    usiMLS = new USILSWrapper.ModuleLifeSupportSystem(psdpart);
 
-                    if ((Utilities.GameModeisFlight && currentPart.protoModuleCrew.Count > 0) || Utilities.GameModeisEditor)
+                    if (Utilities.GameModeisFlight && currentPart.protoModuleCrew.Count > 0)
+                    {
+                        if (currentPart.vessel != null)
+                            usiMLS = new USILSWrapper.ModuleLifeSupportSystem(currentPart.vessel.vesselModules.Find(x => x.GetType() == USILSWrapper.USIMLSSType));
+                        if (usiMLS != null)
+                        {
+                            prtActive = true;
+                            recInputs = usiMLS.LifeSupportRecipe.Inputs;
+                            for (int i = recInputs.Count - 1; i >= 0; --i)
+                            {
+                                if (recInputs[i].ResourceName == MAIN_POWER_NAME)
+                                {
+                                    tmpPower = (recInputs[i].Ratio / currentPart.vessel.GetCrewCount()) * currentPart.protoModuleCrew.Count;
+                                    AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, psdpart.moduleName, false, prtActive, tmpPower, false, false);
+                                }
+                            }
+                        }
+                    }
+                    if (Utilities.GameModeisEditor)
                     {
                         prtActive = true;
+                        tmpPower = 0.01f;//default, how to get ECAmount in editor ?
+                        int maxCrew = currentPart.CrewCapacity;
+                        AYVesselPartLists.AddPart(10101010, prtName, "Kerbals", "Max", false, prtActive, tmpPower * maxCrew, false, false);
+                        //get current crew assigned to craft
+                        //AYVesselPartLists.AddPart(10101010, prtName, "Kerbals", "Current", false, prtActive, tmpPower * curCrew, false, false);
                     }
-                    if (usiMLS != null && Utilities.GameModeisFlight)
-                    {
-                        recInputs = usiMLS.LifeSupportRecipe.Inputs;
-                        for (int i = recInputs.Count - 1; i >= 0; --i)
-                        {
-                            //Utilities.Log_Debug("Converter Input resource = " + r.ResourceName + " ratio = " + r.Ratio);
-                            if (recInputs[i].ResourceName == MAIN_POWER_NAME)
-                            {
-                                if (prtActive)
-                                    tmpPower = recInputs[i].Ratio;
-
-                                AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, psdpart.moduleName, false, prtActive, tmpPower, false, false); ;
-                            }
-                        }
-                        /*
-                        prtPower = ""; 
-                        tmpPower = 0f;
-                        recOutputs = usiMLS.LifeSupportRecipe.Outputs;
-
-                        foreach (ResourceRatio r in recOutputs)
-                        {
-                            //Utilities.Log_Debug("Converter Output resource = " + r.ResourceName + " ratio = " + r.Ratio);
-                            if (r.ResourceName == MAIN_POWER_NAME)
-                            {
-                                if (prtActive)
-                                    tmpPower = (float)r.Ratio;
-
-                                AYVesselPartLists.AddPart(currentPart.craftID, prtName, currentPart.partInfo.title, psdpart.moduleName, false, prtActive, tmpPower, true, false);
-                            }
-                        }
-                    }
-                    break;*/
+                    break;
             }
         }
         
